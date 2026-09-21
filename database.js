@@ -1,12 +1,24 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
+const isLocal = !process.env.VERCEL &&
+  (!process.env.DB_HOST || process.env.DB_HOST === 'localhost' || process.env.DB_HOST === '127.0.0.1');
+
 const pool = new Pool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
+  max: parseInt(process.env.DB_POOL_MAX, 10) || 10,
+  connectionTimeoutMillis: 10000,
+  idleTimeoutMillis: 30000,
+  query_timeout: 20000,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+});
+
+pool.on('error', (err) => {
+  console.error('Unexpected error on idle database client:', err.message);
 });
 
 async function initDB() {
@@ -40,6 +52,7 @@ async function initDB() {
     console.log('Database initialized successfully');
   } catch (error) {
     console.error('Database initialization error:', error.message);
+    throw error;
   } finally {
     client.release();
   }
