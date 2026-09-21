@@ -1,28 +1,59 @@
 const { Pool } = require('pg');
 require('dotenv').config();
 
-const isLocal = !process.env.VERCEL &&
-  (!process.env.DB_HOST || process.env.DB_HOST === 'localhost' || process.env.DB_HOST === '127.0.0.1');
-
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
+const poolConfig = {
   max: parseInt(process.env.DB_POOL_MAX, 10) || 10,
   connectionTimeoutMillis: 10000,
   idleTimeoutMillis: 30000,
   query_timeout: 20000,
-  ssl: isLocal ? false : { rejectUnauthorized: false },
-});
+};
+
+const DATABASE_URL = process.env.DATABASE_URL;
+const useSsl = process.env.DB_SSL === 'true' ||
+  (DATABASE_URL && /(^|[?&])sslmode=(require|verify-ca|verify-full)/i.test(DATABASE_URL));
+
+if (useSsl) {
+  poolConfig.ssl = { rejectUnauthorized: false };
+}
+
+if (DATABASE_URL) {
+  poolConfig.connectionString = DATABASE_URL;
+} else {
+  poolConfig.host = process.env.DB_HOST;
+  poolConfig.port = process.env.DB_PORT;
+  poolConfig.database = process.env.DB_NAME;
+  poolConfig.user = process.env.DB_USER;
+  poolConfig.password = process.env.DB_PASSWORD;
+}
+
+const pool = new Pool(poolConfig);
 
 pool.on('error', (err) => {
   console.error('Unexpected error on idle database client:', err.message);
 });
 
+function getConnectionErrorHint(err) {
+  if (err && (err.code === 'ECONNREFUSED' || String(err.message).includes('ECONNREFUSED'))) {
+    return 'Connection refused. Check: (1) DB_HOST/DB_PORT (or DATABASE_URL) are set in Vercel env, (2) the host is ' +
+      'reachable from the internet (not "localhost"), (3) the port is correct (Supabase pooler=6543, Neon/Render=5432), ' +
+      'and (4) your DB firewall/whitelist allows Vercel IPs.';
+  }
+  if (err && String(err.message).includes('no pg_hba.conf') || String(err.message).includes('SSL')) {
+    return 'Your database requires or rejects SSL. Try setting DB_SSL=true (or remove it) in your Vercel env vars.';
+  }
+  return null;
+}
+
 async function initDB() {
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (error) {
+    const hint = getConnectionErrorHint(error);
+    console.error('Database connection error:', error.message);
+    if (hint) console.error(hint);
+    throw error;
+  }
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS categories (
